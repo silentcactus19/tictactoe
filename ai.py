@@ -1,240 +1,292 @@
-import random
-import time
-from typing import List, Optional, Tuple
+"""
+ai.py
 
+Two AI strategies are implemented:
+1) Random AI (baseline, required by the assignment)
+2) Smart AI using Alpha-Beta pruning with a heuristic evaluation function
+"""
+
+import time
+import random
+from typing import List, Optional
+
+
+# Random AI
 
 def random_move(moves: List[int]) -> Optional[int]:
-    """Pick a random move from available move indices."""
-    return random.choice(moves) if moves else None
+    """
+    Pick a random move from the list of available moves.
+    Parameters:
+        moves: list of available cell indices
 
+    Returns:
+        A randomly chosen move, or None if no moves are available
+    """
+    if not moves:
+        return None
+    return random.choice(moves)
+
+
+# Alpha-Beta AI (Smart AI)
 
 def alphabeta_best_move(
+    *,
     board: List[Optional[str]],
     n: int,
     k: int,
     moves: List[int],
     me: str,
     opponent: str,
-    *,
     max_time_sec: float = 0.25,
     max_depth: Optional[int] = None,
 ) -> Optional[int]:
     """
-    Alpha-beta with a heuristic + time cutoff.
-    Works for any board size; returns the best move found within time/depth.
+    Compute the best move using Alpha-Beta pruning.
+    - time-bounded (never freezes the UI)
+    - heuristic-based (can evaluate non-terminal positions)
+
+    Parameters:
+        board: current board as a flat list
+        n: board size (N)
+        k: win condition (align K)
+        moves: list of currently available moves
+        max_time_sec: time budget for the search
+        max_depth: optional depth limit (None = adaptive)
+
+    Returns:
+        Index of the chosen move, or None if no move is found
     """
+    start_time = time.time()
 
-    if not moves:
-        return None
-
-    # Depth defaults tuned for responsiveness (you can adjust later)
+    # Default depth heuristic:
+    # - small boards can be searched deeper
+    # - larger boards require shallower searches
     if max_depth is None:
-        # A simple rule of thumb; bigger board => smaller depth
-        # Still works for any N; it just searches less on large N.
         if n <= 3:
-            max_depth = 9  # effectively full search
+            max_depth = 9
         elif n == 4:
-            max_depth = 5
+            max_depth = 6
         elif n == 5:
             max_depth = 4
         else:
             max_depth = 3
 
-    deadline = time.perf_counter() + max_time_sec
-
-    # Move ordering helps alpha-beta a LOT:
-    # center-ish moves first (usually best in grid games).
-    ordered_moves = sorted(moves, key=lambda idx: _distance_to_center(idx, n))
-
-    best_move = ordered_moves[0]
     best_score = float("-inf")
+    best_move = None
 
-    # Root search (maximizing)
-    alpha = float("-inf")
-    beta = float("inf")
+    # Move ordering improves alpha-beta pruning efficiency.
+    # Center moves are generally stronger in Tic-Tac-Toe-like games.
+    ordered_moves = sorted(moves, key=lambda m: distance_to_center(m, n))
 
-    for mv in ordered_moves:
-        if time.perf_counter() > deadline:
+    for move in ordered_moves:
+        if time.time() - start_time > max_time_sec:
             break
 
-        board[mv] = me
-        score = _alphabeta(
-            board, n, k,
+        new_board = board.copy()
+        new_board[move] = me
+
+        score = alphabeta(
+            board=new_board,
+            n=n,
+            k=k,
             depth=max_depth - 1,
-            alpha=alpha,
-            beta=beta,
+            alpha=float("-inf"),
+            beta=float("inf"),
             maximizing=False,
             me=me,
             opponent=opponent,
-            deadline=deadline,
+            start_time=start_time,
+            max_time_sec=max_time_sec,
         )
-        board[mv] = None
 
         if score > best_score:
             best_score = score
-            best_move = mv
-
-        alpha = max(alpha, best_score)
+            best_move = move
 
     return best_move
 
 
-def _alphabeta(
+# Alpha-Beta recursion
+
+def alphabeta(
+    *,
     board: List[Optional[str]],
     n: int,
     k: int,
-    *,
     depth: int,
     alpha: float,
     beta: float,
     maximizing: bool,
     me: str,
     opponent: str,
-    deadline: float,
+    start_time: float,
+    max_time_sec: float,
 ) -> float:
-    # Time cutoff
-    if time.perf_counter() > deadline:
-        return _evaluate(board, n, k, me, opponent)
+    """
+    Recursive Alpha-Beta search.
 
-    w = _winner(board, n, k)
-    if w == me:
+    Stops when:
+    - a terminal state is reached (win/draw)
+    - depth reaches 0
+    - time budget is exceeded
+
+    Returns:
+        A numeric evaluation of the position
+    """
+    # Time cutoff: guarantees responsiveness
+    if time.time() - start_time > max_time_sec:
+        return heuristic(board, n, k, me, opponent)
+
+    winner = check_winner(board, n, k)
+    if winner == me:
         return 1_000_000
-    if w == opponent:
+    if winner == opponent:
         return -1_000_000
-    if all(v is not None for v in board):
-        return 0  # draw
+    if is_draw(board):
+        return 0
 
-    if depth <= 0:
-        return _evaluate(board, n, k, me, opponent)
+    if depth == 0:
+        return heuristic(board, n, k, me, opponent)
 
-    moves = [i for i, v in enumerate(board) if v is None]
-    moves.sort(key=lambda idx: _distance_to_center(idx, n))
+    moves = available_moves(board)
 
     if maximizing:
         value = float("-inf")
-        for mv in moves:
-            board[mv] = me
+        for move in moves:
+            new_board = board.copy()
+            new_board[move] = me
+
             value = max(
                 value,
-                _alphabeta(
-                    board, n, k,
+                alphabeta(
+                    board=new_board,
+                    n=n,
+                    k=k,
                     depth=depth - 1,
                     alpha=alpha,
                     beta=beta,
                     maximizing=False,
                     me=me,
                     opponent=opponent,
-                    deadline=deadline,
+                    start_time=start_time,
+                    max_time_sec=max_time_sec,
                 ),
             )
-            board[mv] = None
             alpha = max(alpha, value)
-            if alpha >= beta:
-                break
+            if beta <= alpha:
+                break  # Beta cut-off
         return value
+
     else:
         value = float("inf")
-        for mv in moves:
-            board[mv] = opponent
+        for move in moves:
+            new_board = board.copy()
+            new_board[move] = opponent
+
             value = min(
                 value,
-                _alphabeta(
-                    board, n, k,
+                alphabeta(
+                    board=new_board,
+                    n=n,
+                    k=k,
                     depth=depth - 1,
                     alpha=alpha,
                     beta=beta,
                     maximizing=True,
                     me=me,
                     opponent=opponent,
-                    deadline=deadline,
+                    start_time=start_time,
+                    max_time_sec=max_time_sec,
                 ),
             )
-            board[mv] = None
             beta = min(beta, value)
-            if alpha >= beta:
-                break
+            if beta <= alpha:
+                break  # Alpha cut-off
         return value
 
 
-def _evaluate(board: List[Optional[str]], n: int, k: int, me: str, opponent: str) -> float:
+# Heuristic evaluation
+
+def heuristic(board: List[Optional[str]], n: int, k: int, me: str, opponent: str) -> float:
     """
-    Heuristic: score all length-k segments in rows/cols/diagonals.
-    A segment contributes if it's still "open" (contains only me + empty OR opponent + empty).
-    Weighted by how close it is to completion.
+    Heuristic evaluation function.
+
+    Strategy:
+    - Look at every possible K-length line
+    - Ignore blocked lines (containing both players)
+    - Score lines exponentially based on how close they are to completion
+
+    Returns:
+        Positive score if position favors AI,
+        Negative score if it favors the opponent
     """
-    my_score = 0.0
-    opp_score = 0.0
+    score = 0
 
-    for segment in _all_segments(board, n, k):
-        m = segment.count(me)
-        o = segment.count(opponent)
+    for line in generate_lines(board, n, k):
+        me_count = line.count(me)
+        opp_count = line.count(opponent)
 
-        if m > 0 and o > 0:
-            continue  # blocked segment -> no one benefits
+        # Blocked line → no value
+        if me_count > 0 and opp_count > 0:
+            continue
 
-        empties = k - (m + o)
-        if empties == k:
-            continue  # all empty -> neutral
+        if me_count > 0:
+            score += 10 ** (me_count - 1)
+        elif opp_count > 0:
+            score -= 10 ** (opp_count - 1)
 
-        # Exponential-ish weights: 1, 10, 100, 1000 ...
-        if m > 0 and o == 0:
-            my_score += 10 ** (m - 1)
-        elif o > 0 and m == 0:
-            opp_score += 10 ** (o - 1)
-
-    return my_score - opp_score
+    return score
 
 
-def _all_segments(board: List[Optional[str]], n: int, k: int) -> List[List[Optional[str]]]:
-    """Return every contiguous length-k segment in all directions."""
-    segments: List[List[Optional[str]]] = []
+# Utility functions (pure, no side effects)
 
-    def at(r: int, c: int) -> Optional[str]:
-        return board[r * n + c]
-
-    directions: List[Tuple[int, int]] = [(0, 1), (1, 0), (1, 1), (1, -1)]
-
-    for r in range(n):
-        for c in range(n):
-            for dr, dc in directions:
-                end_r = r + (k - 1) * dr
-                end_c = c + (k - 1) * dc
-                if not (0 <= end_r < n and 0 <= end_c < n):
-                    continue
-                seg = [at(r + i * dr, c + i * dc) for i in range(k)]
-                segments.append(seg)
-
-    return segments
+def available_moves(board: List[Optional[str]]) -> List[int]:
+    """Return indices of all empty cells."""
+    return [i for i, v in enumerate(board) if v is None]
 
 
-def _winner(board: List[Optional[str]], n: int, k: int) -> Optional[str]:
-    def at(r: int, c: int) -> Optional[str]:
-        return board[r * n + c]
-
-    directions = [(0, 1), (1, 0), (1, 1), (1, -1)]
-
-    for r in range(n):
-        for c in range(n):
-            start = at(r, c)
-            if start is None:
-                continue
-            for dr, dc in directions:
-                end_r = r + (k - 1) * dr
-                end_c = c + (k - 1) * dc
-                if not (0 <= end_r < n and 0 <= end_c < n):
-                    continue
-                ok = True
-                for step in range(1, k):
-                    if at(r + step * dr, c + step * dc) != start:
-                        ok = False
-                        break
-                if ok:
-                    return start
-    return None
+def is_draw(board: List[Optional[str]]) -> bool:
+    """Return True if the board is full."""
+    return all(v is not None for v in board)
 
 
-def _distance_to_center(idx: int, n: int) -> float:
+def distance_to_center(idx: int, n: int) -> float:
+    """Used for move ordering: center-first improves pruning."""
     r, c = divmod(idx, n)
-    center = (n - 1) / 2.0
-    return (r - center) ** 2 + (c - center) ** 2
+    center = (n - 1) / 2
+    return abs(r - center) + abs(c - center)
 
+
+def generate_lines(board: List[Optional[str]], n: int, k: int):
+    """
+    Yield all possible K-length segments (rows, columns, diagonals).
+    """
+    # Rows
+    for r in range(n):
+        for c in range(n - k + 1):
+            yield [board[r * n + c + i] for i in range(k)]
+
+    # Columns
+    for c in range(n):
+        for r in range(n - k + 1):
+            yield [board[(r + i) * n + c] for i in range(k)]
+
+    # Diagonal ↘
+    for r in range(n - k + 1):
+        for c in range(n - k + 1):
+            yield [board[(r + i) * n + (c + i)] for i in range(k)]
+
+    # Diagonal ↙
+    for r in range(n - k + 1):
+        for c in range(k - 1, n):
+            yield [board[(r + i) * n + (c - i)] for i in range(k)]
+
+
+def check_winner(board: List[Optional[str]], n: int, k: int) -> Optional[str]:
+    """
+    Return the winning symbol if a player has won, else None.
+    """
+    for line in generate_lines(board, n, k):
+        if line[0] is not None and all(v == line[0] for v in line):
+            return line[0]
+    return None
